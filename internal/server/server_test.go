@@ -28,6 +28,7 @@ type harness struct {
 	tenants tenantv1.TenantServiceClient
 	health  healthpb.HealthClient
 	repo    *tenant.Repository
+	pool    *pgxpool.Pool
 }
 
 // newHarness starts the real gRPC server in memory against a throwaway schema in tenant_db.
@@ -91,6 +92,7 @@ func newHarness(t *testing.T, dsn string) *harness {
 		tenants: tenantv1.NewTenantServiceClient(conn),
 		health:  healthpb.NewHealthClient(conn),
 		repo:    repo,
+		pool:    pool,
 	}
 }
 
@@ -172,6 +174,21 @@ func TestGetTenantDatabaseDownIsUnavailableWithoutDetails(t *testing.T) {
 	}
 }
 
+func TestGetTenantStorageFailureIsInternalWithoutDetails(t *testing.T) {
+	h := newHarness(t, "")
+	// A missing table is a server-side SQL error, not an outage
+	if _, err := h.pool.Exec(callCtx(t), "DROP TABLE tenants"); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	_, err := h.tenants.GetTenant(callCtx(t), &tenantv1.GetTenantRequest{TenantId: uuid.Must(uuid.NewV7()).String()})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("got %v, want Internal", err)
+	}
+	if msg := strings.ToLower(status.Convert(err).Message()); strings.Contains(msg, "tenants") || strings.Contains(msg, "relation") {
+		t.Errorf("message leaks SQL details: %q", msg)
+	}
+}
+
 func TestHealthIsServingWithReachableDatabase(t *testing.T) {
 	h := newHarness(t, "")
 	waitForHealth(t, h, healthpb.HealthCheckResponse_SERVING)
@@ -186,17 +203,22 @@ func waitForHealth(t *testing.T, h *harness, want healthpb.HealthCheckResponse_S
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	var last healthpb.HealthCheckResponse_ServingStatus
-	for time.Now().Before(deadline) {
-		resp, err := h.health.Check(callCtx(t), &healthpb.HealthCheckRequest{Service: tenantv1.TenantService_ServiceDesc.ServiceName})
-		if err == nil {
-			last = resp.GetStatus()
-			if last == want {
-				return
+	// "" is the overall status probed by containers; the service name is probed by gRPC clients
+	for _, svc := range []string{"", tenantv1.TenantService_ServiceDesc.ServiceName} {
+		for time.Now().Before(deadline) {
+			resp, err := h.health.Check(callCtx(t), &healthpb.HealthCheckRequest{Service: svc})
+			if err == nil {
+				last = resp.GetStatus()
+				if last == want {
+					break
+				}
 			}
+			time.Sleep(25 * time.Millisecond)
 		}
-		time.Sleep(25 * time.Millisecond)
+		if last != want {
+			t.Fatalf("health %q: got %v, want %v", svc, last, want)
+		}
 	}
-	t.Fatalf("health: got %v, want %v", last, want)
 }
 
 func TestSeedIsIdempotent(t *testing.T) {
