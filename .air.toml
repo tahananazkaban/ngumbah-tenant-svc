@@ -1,0 +1,11 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/tenant-svc ./cmd/tenant-svc"
+entrypoint = ["./tmp/tenant-svc", "serve"]
+include_ext = ["go", "sql"]
+exclude_dir = ["tmp", "bin", "gen"]
+
+[log]
+time = false
