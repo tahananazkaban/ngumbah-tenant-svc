@@ -33,7 +33,8 @@ lint: ## Run golangci-lint in Docker
 
 generate: ## Regenerate gRPC code (contract $(CONTRACTS_TAG)) and sqlc code
 	@rm -rf gen && buf generate "$(CONTRACTS_URL)"
-	@docker run --rm -v "$(CURDIR):/src" -w /src $(SQLC_IMAGE) generate
+	@# Run as the host user so generated files are not root-owned on Linux
+	@docker run --rm --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/src" -w /src $(SQLC_IMAGE) generate
 
 generate-check: ## Fail if committed generated code is out of date
 	@sh scripts/generate-check.sh
