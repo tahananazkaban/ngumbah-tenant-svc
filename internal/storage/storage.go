@@ -20,8 +20,6 @@ type Config struct {
 	URL string
 	// Schema overrides search_path; empty means the default (public).
 	Schema string
-	// MaxConns caps the pool; zero means 5.
-	MaxConns int32
 }
 
 // Open creates a lazily connecting pool; it does not fail when the database is down.
@@ -30,10 +28,8 @@ func Open(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
+	// Small pool keeps Postgres usable on an 8 GB laptop
 	pc.MaxConns = 5
-	if cfg.MaxConns > 0 {
-		pc.MaxConns = cfg.MaxConns
-	}
 	if cfg.Schema != "" {
 		pc.ConnConfig.RuntimeParams["search_path"] = cfg.Schema
 	}
@@ -42,13 +38,11 @@ func Open(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 
 // Migrate applies all pending migrations to the pool's search_path.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	db := stdlib.OpenDBFromPool(pool)
-	defer func() { _ = db.Close() }()
-
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, mustSub(migrations, "migrations"))
+	provider, closeDB, err := newProvider(pool)
 	if err != nil {
-		return fmt.Errorf("init migrations: %w", err)
+		return err
 	}
+	defer closeDB()
 	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
@@ -57,14 +51,24 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 
 // MigrationVersion reports the newest applied migration version.
 func MigrationVersion(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	db := stdlib.OpenDBFromPool(pool)
-	defer func() { _ = db.Close() }()
+	provider, closeDB, err := newProvider(pool)
+	if err != nil {
+		return 0, err
+	}
+	defer closeDB()
+	return provider.GetDBVersion(ctx)
+}
 
+// newProvider builds a goose provider over the pool; call the returned func when done.
+func newProvider(pool *pgxpool.Pool) (*goose.Provider, func(), error) {
+	db := stdlib.OpenDBFromPool(pool)
+	closeDB := func() { _ = db.Close() }
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, mustSub(migrations, "migrations"))
 	if err != nil {
-		return 0, fmt.Errorf("init migrations: %w", err)
+		closeDB()
+		return nil, nil, fmt.Errorf("init migrations: %w", err)
 	}
-	return provider.GetDBVersion(ctx)
+	return provider, closeDB, nil
 }
 
 func mustSub(fsys embed.FS, dir string) fs.FS {

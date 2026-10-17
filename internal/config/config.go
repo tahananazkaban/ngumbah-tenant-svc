@@ -9,6 +9,12 @@ import (
 	"strings"
 )
 
+// DefaultGRPCAddr is the listen address when TENANT_SVC_GRPC_ADDR is unset.
+const DefaultGRPCAddr = ":50051"
+
+// GRPCAddr returns the configured listen address without validating anything else.
+func GRPCAddr() string { return getenv("TENANT_SVC_GRPC_ADDR", DefaultGRPCAddr) }
+
 // Config holds every runtime setting of the service.
 type Config struct {
 	GRPCAddr      string
@@ -24,7 +30,7 @@ func (c Config) Development() bool { return c.Env == "development" }
 // Load reads the environment and validates it; all problems are reported at once.
 func Load() (Config, error) {
 	cfg := Config{
-		GRPCAddr:      getenv("TENANT_SVC_GRPC_ADDR", ":50051"),
+		GRPCAddr:      GRPCAddr(),
 		DatabaseURL:   os.Getenv("TENANT_SVC_DATABASE_URL"),
 		Env:           getenv("TENANT_SVC_ENV", "production"),
 		TraceExporter: getenv("OTEL_TRACES_EXPORTER", "none"),

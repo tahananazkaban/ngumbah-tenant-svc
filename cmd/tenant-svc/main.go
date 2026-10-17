@@ -9,9 +9,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -58,7 +60,7 @@ func main() {
 
 	switch cmd {
 	case "serve":
-		err = serve(ctx, cfg, logger)
+		err = serve(ctx, stop, cfg, logger)
 	case "migrate":
 		err = migrate(ctx, cfg, logger)
 	case "seed":
@@ -73,11 +75,11 @@ func main() {
 	}
 }
 
-func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+func serve(ctx context.Context, stopSignals func(), cfg config.Config, logger *slog.Logger) error {
 	shutdownTracing := setupTracing()
 	defer shutdownTracing()
 
-	pool, err := storage.Open(ctx, storage.Config{URL: cfg.DatabaseURL})
+	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -108,10 +110,13 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	select {
 	case err := <-errc:
+		srv.Stop()
 		return err
 	case <-ctx.Done():
 	}
 
+	// Restore default signal handling so a second Ctrl-C exits immediately
+	stopSignals()
 	logger.Info("shutting down")
 	done := make(chan struct{})
 	go func() { srv.GracefulStop(); close(done) }()
@@ -123,8 +128,13 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	return nil
 }
 
+// openPool connects to tenant_db with the configured URL.
+func openPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
+	return storage.Open(ctx, storage.Config{URL: cfg.DatabaseURL})
+}
+
 func migrate(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
-	pool, err := storage.Open(ctx, storage.Config{URL: cfg.DatabaseURL})
+	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -142,7 +152,7 @@ func migrate(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 }
 
 func seed(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
-	pool, err := storage.Open(ctx, storage.Config{URL: cfg.DatabaseURL})
+	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -165,9 +175,10 @@ func setupTracing() func() {
 
 // probeHealth exits 0 when the local server reports SERVING.
 func probeHealth() int {
-	addr := os.Getenv("TENANT_SVC_GRPC_ADDR")
-	if addr == "" || addr[0] == ':' {
-		addr = "127.0.0.1" + orDefault(addr, ":50051")
+	addr := config.GRPCAddr()
+	// A bare ":port" listens on all interfaces; probe it through loopback
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -189,11 +200,4 @@ func probeHealth() int {
 		return 1
 	}
 	return 0
-}
-
-func orDefault(v, fallback string) string {
-	if v == "" {
-		return fallback
-	}
-	return v
 }

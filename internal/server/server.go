@@ -39,6 +39,9 @@ type Options struct {
 	HealthInterval time.Duration
 }
 
+// pingTimeout bounds each health ping like any other database call.
+const pingTimeout = 2 * time.Second
+
 // Server is a gRPC server plus its background health checker.
 type Server struct {
 	grpc     *grpc.Server
@@ -101,7 +104,7 @@ func (s *Server) watchHealth() {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), s.interval)
+		ctx, cancel := context.WithTimeout(context.Background(), min(s.interval, pingTimeout))
 		s.setServing(s.pinger.Ping(ctx) == nil)
 		cancel()
 		select {
@@ -148,12 +151,17 @@ func (h *tenantHandler) toStatus(ctx context.Context, err error) error {
 	case errors.Is(err, tenant.ErrNotFound):
 		return status.Error(codes.NotFound, "tenant not found")
 	case errors.Is(err, tenant.ErrUnavailable), errors.Is(err, context.DeadlineExceeded):
-		h.logger.ErrorContext(ctx, "tenant storage unavailable", append([]any{"error", err}, traceArgs(ctx)...)...)
+		h.logError(ctx, "tenant storage unavailable", err)
 		return status.Error(codes.Unavailable, "service temporarily unavailable")
 	default:
-		h.logger.ErrorContext(ctx, "get tenant failed", append([]any{"error", err}, traceArgs(ctx)...)...)
+		h.logError(ctx, "get tenant failed", err)
 		return status.Error(codes.Internal, "internal error")
 	}
+}
+
+// logError keeps the full error server-side, tagged with the request's trace.
+func (h *tenantHandler) logError(ctx context.Context, msg string, err error) {
+	h.logger.ErrorContext(ctx, msg, append([]any{"error", err}, traceArgs(ctx)...)...)
 }
 
 func toProtoPlan(p tenant.Plan) tenantv1.Plan {
