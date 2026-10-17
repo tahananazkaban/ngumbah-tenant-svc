@@ -1,11 +1,21 @@
 #!/bin/sh
-# Regenerates all code and fails if it differs from what is committed.
+# Regenerates code in a temporary copy and fails if it differs from the working tree.
 set -eu
 
-make generate >/dev/null
-if [ -n "$(git status --porcelain -- gen internal/storage/sqlcgen)" ]; then
-  echo "generate-check: generated code is out of date; run make generate and commit" >&2
-  git status --short -- gen internal/storage/sqlcgen >&2
-  exit 1
-fi
-echo "generate-check: generated code is up to date"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Copy sources without generated output so stale files cannot hide drift
+tar -C "$root" --exclude=.git --exclude=gen --exclude=internal/storage/sqlcgen --exclude=bin --exclude=tmp -cf - . | tar -C "$tmp" -xf -
+(cd "$tmp" && make generate >/dev/null)
+
+status=0
+for dir in gen internal/storage/sqlcgen; do
+  if ! diff -r "$root/$dir" "$tmp/$dir" >/dev/null; then
+    echo "generate-check: $dir is out of date; run make generate and commit" >&2
+    status=1
+  fi
+done
+[ "$status" -eq 0 ] && echo "generate-check: generated code is up to date"
+exit "$status"

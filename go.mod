@@ -14,7 +14,7 @@ require (
 	github.com/pressly/goose/v3 v3.29.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
 	go.opentelemetry.io/otel v1.47.0
-	go.opentelemetry.io/otel/sdk v1.44.0
+	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
